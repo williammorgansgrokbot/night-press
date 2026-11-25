@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="icon" href="data:,">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Night Press — Pecan Branch Lot</title>
+  <style>* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: #07060a; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+body { font-family: "Trebuchet MS", "Segoe UI", sans-serif; color: #f2e8d8; }
+#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#hud {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 5;
+  display: flex; align-items: center; gap: 10px;
+  padding: calc(8px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.45), transparent);
+}
+#title { font-weight: 800; letter-spacing: 0.16em; font-size: 13px; text-shadow: 0 0 12px #ff4ec8; }
+#sub { opacity: 0.7; font-size: 11px; letter-spacing: 0.06em; }
+#mute, #vr {
+  pointer-events: auto; margin-left: auto;
+  background: rgba(20,16,24,0.7); color: #f2e8d8; border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 18px; padding: 8px 14px; font-size: 12px; letter-spacing: 0.08em; min-height: 36px;
+}
+#vr { margin-left: 8px; }
+#load {
+  position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px;
+  background: #100c14; letter-spacing: 0.08em;
+}
+#loadbar { width: min(280px, 70vw); height: 6px; background: #2a2230; border-radius: 6px; overflow: hidden; }
+#loadfill { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #ff4ec8, #7ee0ff); }
+#load.gone { display: none; }
+.stick {
+  display: none; position: fixed; z-index: 6;
+  width: 112px; height: 112px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.28); background: rgba(0,0,0,0.28);
+  left: calc(22px + env(safe-area-inset-left, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  touch-action: none;
+}
+.stick i {
+  position: absolute; width: 48px; height: 48px; border-radius: 50%;
+  left: 50%; top: 50%; transform: translate(-50%,-50%);
+  background: rgba(255,255,255,0.55);
+}
+#lookPad {
+  display: none; position: fixed; z-index: 4; top: 0; bottom: 0; right: 0; width: 58%;
+  touch-action: none;
+}
+body.touch .stick, body.touch #lookPad { display: block; }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="title">NIGHT PRESS</div>
+    <div id="sub">Pecan Branch Mall · Dallas</div>
+    <button id="mute" type="button" aria-label="Mute">SOUND ON</button>
+    <button id="vr" type="button" hidden>ENTER VR</button>
+  </div>
+  <div id="load"><div id="loadbar"><i id="loadfill"></i></div><div id="loadtxt">Loading the lot…</div></div>
+  <div id="stickMove" class="stick" aria-hidden="true"><i></i></div>
+  <div id="lookPad" aria-hidden="true"></div>
+  <script src="game.js"></script>
+</body>
+</html>
