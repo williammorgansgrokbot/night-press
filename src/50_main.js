@@ -47,6 +47,7 @@ async function boot() {
     await tryUrls("generator", ["assets/generator.mp3", "assets/generator.ogg"]);
   }).catch(() => {});
   setupXR();
+  window.World = World;
   window.__READY = true;
   window.__teleport = (x, y, z, yaw, pitch) => {
     Player.pos.set(x, y, z);
