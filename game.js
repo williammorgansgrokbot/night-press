@@ -6406,30 +6406,8 @@ async function initWorld() {
       const root = await loadGLB("assets/" + file);
       prepareMaterials(root);
       scene.add(root);
-      // ride animations
-      if (file === "carnival.glb") {
-        findByName(root, ["ferris", "wheel"]).forEach((o) => {
-          if (o.parent && /wheel|ferris/i.test(o.name)) World.anim.push({ obj: o, kind: "spinZ", speed: 0.18 });
-        });
-        // spin the biggest wheel-like object
-        let wheel = null, max = 0;
-        root.traverse((o) => {
-          if (!o.isMesh) return;
-          const b = new THREE.Box3().setFromObject(o);
-          const s = b.getSize(new THREE.Vector3());
-          const n = o.name.toLowerCase();
-          if ((n.includes("wheel") || n.includes("ferris") || n.includes("gond")) && s.x + s.y > max) {
-            max = s.x + s.y; wheel = o;
-          }
-        });
-        if (wheel) World.anim.push({ obj: wheel, kind: "spinZ", speed: 0.22 });
-        findByName(root, ["carousel"]).forEach((o) => {
-          if (!o.parent || o.parent === root) World.anim.push({ obj: o, kind: "spinY", speed: 0.45 });
-        });
-        findByName(root, ["swing"]).forEach((o) => {
-          if (!o.parent || o.parent === root) World.anim.push({ obj: o, kind: "sway", speed: 0.8 });
-        });
-      }
+      // ride animations — only the moving parts, never the planted supports
+      if (file === "carnival.glb") hookCarnivalAnims(root);
     } catch (err) {
       console.warn("missing or failed", file, err);
     }
@@ -6486,11 +6464,54 @@ function groundHeight(x, z, feetY) {
   return y;
 }
 
+
+function hookCarnivalAnims(root) {
+  let ferris = null, carousel = null, swing = null;
+  root.traverse((o) => {
+    const n = (o.name || "").toLowerCase();
+    if (n === "ferris-wheel" || n === "ferris_wheel") ferris = o;
+    else if (n === "carousel") carousel = o;
+    else if (n === "swing-ride") swing = o;
+  });
+
+  // Ferris: the "ferris-wheel" group includes the A-frame/base (pivot at the ground).
+  // Only the child named "wheel" should turn, around its axle (local Z, origin at the hub).
+  // Gondolas ride with the wheel but are counter-rotated so they hang upright.
+  if (ferris) {
+    const wheel = ferris.getObjectByName("wheel");
+    if (wheel) {
+      const gondolas = wheel.children.filter((c) => /^gondola/i.test(c.name));
+      World.anim.push({ kind: "ferrisWheel", obj: wheel, frame: ferris, speed: 0.18, gondolas });
+    }
+  }
+
+  // Carousel: spin the platform and canopy around Y; leave the concrete base planted.
+  if (carousel) {
+    carousel.children.forEach((c) => {
+      const n = (c.name || "").toLowerCase();
+      if (n === "platform" || n === "canopy") {
+        World.anim.push({ kind: "spinY", obj: c, speed: 0.45 });
+      }
+    });
+  }
+
+  // Swing: spin the top rotor, not the whole ride (old code yaw-swayed the tower and pad).
+  if (swing) {
+    const spin = swing.getObjectByName("top_spin");
+    if (spin) World.anim.push({ kind: "spinY", obj: spin, speed: 0.5 });
+  }
+}
+
 function tickWorld(dt) {
   for (const a of World.anim) {
     if (a.kind === "spinY") a.obj.rotation.y += a.speed * dt;
     else if (a.kind === "spinZ") a.obj.rotation.z += a.speed * dt;
     else if (a.kind === "sway") a.obj.rotation.y = Math.sin(World.clock.elapsedTime * a.speed) * 0.4;
+    else if (a.kind === "ferrisWheel") {
+      a.obj.rotation.z += a.speed * dt;
+      const hang = -a.obj.rotation.z;
+      for (let i = 0; i < a.gondolas.length; i++) a.gondolas[i].rotation.z = hang;
+    }
   }
 }
 
@@ -6620,6 +6641,7 @@ async function boot() {
     await tryUrls("generator", ["assets/generator.mp3", "assets/generator.ogg"]);
   }).catch(() => {});
   setupXR();
+  window.World = World;
   window.__READY = true;
   window.__teleport = (x, y, z, yaw, pitch) => {
     Player.pos.set(x, y, z);
