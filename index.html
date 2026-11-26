@@ -52,6 +52,35 @@ body { font-family: "Trebuchet MS", "Segoe UI", sans-serif; color: #f2e8d8; }
   touch-action: none;
 }
 body.touch .stick, body.touch #lookPad { display: block; }
+
+#prompt {
+  position: fixed; z-index: 7; left: 50%; transform: translateX(-50%);
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  min-height: 44px; min-width: 160px; padding: 10px 22px;
+  border-radius: 22px; border: 1px solid rgba(255,255,255,0.35);
+  background: rgba(16,12,20,0.82); color: #f2e8d8;
+  letter-spacing: 0.12em; font-size: 13px; font-weight: 700;
+  pointer-events: auto;
+}
+#panelBar {
+  position: fixed; z-index: 8; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100vw - 24px);
+  pointer-events: auto;
+}
+#panelBar button {
+  min-height: 44px; padding: 8px 14px; border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.3);
+  background: rgba(16,12,20,0.85); color: #f2e8d8;
+  letter-spacing: 0.1em; font-size: 11px; font-weight: 700;
+}
+#panelBar button.on { border-color: #7ee0ff; color: #7ee0ff; box-shadow: 0 0 10px rgba(126,224,255,0.4); }
+#panelBar button.hi { outline: 2px solid #ff4ec8; }
+body.panel .stick, body.panel #lookPad { display: none !important; }
+
+#prompt[hidden], #panelBar[hidden] { display: none !important; }
+body.panel #panelBar:not([hidden]) { display: flex; }
 </style>
 </head>
 <body>
@@ -65,6 +94,14 @@ body.touch .stick, body.touch #lookPad { display: block; }
   <div id="load"><div id="loadbar"><i id="loadfill"></i></div><div id="loadtxt">Loading the lot…</div></div>
   <div id="stickMove" class="stick" aria-hidden="true"><i></i></div>
   <div id="lookPad" aria-hidden="true"></div>
+  <button id="prompt" type="button" hidden>ENTER RIDE</button>
+  <div id="panelBar" hidden>
+    <button type="button" data-act="power">POWER</button>
+    <button type="button" data-act="lights">LIGHTS</button>
+    <button type="button" data-act="horn">HORN</button>
+    <button type="button" data-act="start">START</button>
+    <button type="button" data-act="back">BACK</button>
+  </div>
   <script src="game.js"></script>
 </body>
 </html>

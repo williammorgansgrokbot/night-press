@@ -6090,7 +6090,48 @@ const AudioBus = (() => {
     if (btn) btn.textContent = muted ? "SOUND OFF" : "SOUND ON";
   }
 
-  return { resume, loadLoop, toggle, setMuted, get muted() { return muted; }, get started() { return started; } };
+  function blip(freq, dur, type, gain) {
+    ensure();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type || "square";
+    o.frequency.value = freq;
+    const t = ctx.currentTime;
+    const amp = gain == null ? 0.14 : gain;
+    g.gain.setValueAtTime(amp, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(AudioBus._hp);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  function click() { blip(880, 0.05, "square", 0.08); }
+  function horn() {
+    blip(420, 0.5, "sawtooth", 0.2);
+    blip(280, 0.5, "square", 0.1);
+  }
+  let mot = null;
+  function motor(gain, freq) {
+    ensure();
+    if (!ctx) return;
+    if (gain <= 0.01) {
+      if (mot) { mot.g.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.08); }
+      return;
+    }
+    if (!mot) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sawtooth";
+      o.frequency.value = freq || 160;
+      g.gain.value = 0.0001;
+      o.connect(g); g.connect(AudioBus._hp);
+      o.start();
+      mot = { o, g };
+    }
+    mot.o.frequency.setTargetAtTime(freq || 160, ctx.currentTime, 0.1);
+    mot.g.gain.setTargetAtTime(gain, ctx.currentTime, 0.1);
+  }
+
+  return { resume, loadLoop, toggle, setMuted, blip, click, horn, motor, get muted() { return muted; }, get started() { return started; } };
 })();
 
 /* iPhone landscape: virtual move stick left, look-drag right. Keyboard WASD + pointer lock. Gamepad. */
@@ -6101,6 +6142,7 @@ const Input = (() => {
   const padL = { x: 0, y: 0 }, padR = { x: 0, y: 0 };
   let lookSens = 0.0022, padLookSens = 1.6;
   let pointerLocked = false;
+  let interactPrev = false, backPrev = false;
 
   function bind() {
     if (Util.isTouch()) document.body.classList.add("touch");
@@ -6114,8 +6156,10 @@ const Input = (() => {
     window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
     const canvas = document.getElementById("c");
-    canvas.addEventListener("click", () => {
+    canvas.addEventListener("click", (e) => {
       AudioBus.resume();
+      if (typeof Ride !== "undefined" && Ride.mode === "panel") return;
+      if (typeof Ride !== "undefined" && Ride.prompt) { Ride.doInteract(); return; }
       if (!Util.isTouch() && canvas.requestPointerLock) canvas.requestPointerLock();
     });
     document.addEventListener("pointerlockchange", () => {
@@ -6224,7 +6268,31 @@ const Input = (() => {
     return { x, y, mag: Math.min(1, l), lookX: padR.x * padLookSens, lookY: padR.y * padLookSens };
   }
 
-  return { bind, moveVec, consumeLook };
+  function consumeInteract() {
+    pollPad();
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let pad = null;
+    for (let i = 0; i < pads.length; i++) if (pads[i]) { pad = pads[i]; break; }
+    const a = !!(pad && pad.buttons[0] && pad.buttons[0].pressed);
+    const b = !!(pad && pad.buttons[1] && pad.buttons[1].pressed);
+    const down = !!(keys.KeyE) || a;
+    const backDown = !!(keys.Escape || keys.KeyQ) || b;
+    const pressed = down && !interactPrev;
+    const back = backDown && !backPrev;
+    interactPrev = down;
+    backPrev = backDown;
+    let dpad = 0;
+    if (pad) {
+      if (pad.buttons[14] && pad.buttons[14].pressed) dpad = -1;
+      if (pad.buttons[15] && pad.buttons[15].pressed) dpad = 1;
+    }
+    if (keys.ArrowLeft && !keys._hlL) dpad = -1;
+    if (keys.ArrowRight && !keys._hlR) dpad = 1;
+    keys._hlL = !!keys.ArrowLeft; keys._hlR = !!keys.ArrowRight;
+    return { pressed, back, dpad };
+  }
+
+  return { bind, moveVec, consumeLook, consumeInteract, get pointerLocked() { return pointerLocked; } };
 })();
 
 const World = {
@@ -6263,13 +6331,25 @@ function prepareMaterials(root) {
       if (!m) return;
       if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
       if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+      const n = (m.name || o.name || "").toLowerCase();
       const em = m.emissive ? m.emissive.getHex() : 0;
-      if (em > 0 || (m.emissiveIntensity && m.emissiveIntensity > 0.01)) {
-        m.emissiveIntensity = Math.max(m.emissiveIntensity || 1, 1.4);
+      // parked cars should not blaze headlights; keep a faint tail lamp at most
+      if (/light_front|headlamp|headlight|moving_\d+_hl/.test(n)) {
+        if (m.emissive) m.emissive.setRGB(0, 0, 0);
+        m.emissiveIntensity = 0;
+      } else if (/light_rear|taillamp|tail_/.test(n)) {
+        m.emissiveIntensity = Math.min(m.emissiveIntensity || 1, 0.25);
+      } else if (/window_office|window_hotel/.test(n)) {
+        // mall glass was blasting white; keep a dim interior glow
+        if (m.emissive) m.emissive.multiplyScalar(0.28);
+        m.emissiveIntensity = Math.min(m.emissiveIntensity || 1, 0.35);
+        if ("envMapIntensity" in m) m.envMapIntensity = 0.45;
+        m.roughness = Math.max(m.roughness ?? 0.2, 0.35);
+      } else if (em > 0 || (m.emissiveIntensity && m.emissiveIntensity > 0.01)) {
+        m.emissiveIntensity = Math.max(m.emissiveIntensity || 1, 1.15);
         m.toneMapped = true;
       }
       // wet-look boost for asphalt-like materials
-      const n = (m.name || o.name || "").toLowerCase();
       if (n.includes("asphalt") || n.includes("ground") || n.includes("puddle")) {
         m.roughness = Math.min(m.roughness ?? 0.5, 0.28);
         m.metalness = Math.max(m.metalness ?? 0, 0.12);
@@ -6371,13 +6451,13 @@ async function initWorld() {
   };
   World.colliders = (lot.colliders || []).filter((c) => {
     const n = (c.name || "").toLowerCase().replace(/\s|\./g, "");
-    if (/^(riser_|stanchbase|doorthresh|doorstoop|rampa$|rampb$|rampmid|edgeroad|genskid|trailerskirt|trailerfloor|panelkick|stripe|hoop_|padridge)/.test(n)) return false;
+    if (/^(riser_|stanchbase|doorthresh|doorstoop|chassiscross|chassisbeam|rampa$|rampb$|rampmid|edgeroad|genskid|trailerskirt|trailerfloor|panelkick|panelshelf|stripe|hoop_|padridge|ridewall$|ridedoor$)/.test(n)) return false;
     if ((c.name || "").toLowerCase().includes("crowd_barrier")) {
-      if (c.min[0] < 1.45 && c.max[0] > -1.45) return false;
+      if (c.min[0] < 1.45 && c.max[0] > -1.45) return false; // gap at the Night Press stairs / door
     }
-    if (c.max[2] < 0.28 && (c.max[2] - c.min[2]) < 0.35) return false;
+    if (c.max[2] < 0.36 && (c.max[2] - c.min[2]) < 0.40) return false;
     return true;
-  }).map(Util.boxToThree);
+  }).map((c) => Object.assign(Util.boxToThree(c), { name: c.name }));
   World.floors = (lot.floors || []).map((f) => {
     const a = Util.fromBlender(f.min[0], f.min[1], f.z);
     const b = Util.fromBlender(f.max[0], f.max[1], f.z);
@@ -6388,6 +6468,8 @@ async function initWorld() {
       minZ: Math.min(a.z, b.z), maxZ: Math.max(a.z, b.z),
     };
   });
+
+  addDrumAndRailColliders();
 
   const assets = [
     ["ground.glb", 0.2, "Laying asphalt…"],
@@ -6406,8 +6488,9 @@ async function initWorld() {
       const root = await loadGLB("assets/" + file);
       prepareMaterials(root);
       scene.add(root);
-      // ride animations — only the moving parts, never the planted supports
       if (file === "carnival.glb") hookCarnivalAnims(root);
+      if (file === "night_press.glb") { World.rideRoot = root; if (typeof Ride !== "undefined") Ride.bind(root); }
+      if (file === "people.glb") placeCrowd(root);
     } catch (err) {
       console.warn("missing or failed", file, err);
     }
@@ -6503,6 +6586,8 @@ function hookCarnivalAnims(root) {
 }
 
 function tickWorld(dt) {
+  if (typeof tickCrowd === "function") tickCrowd(dt);
+  if (typeof Ride !== "undefined" && Ride.tick) Ride.tick(dt);
   for (const a of World.anim) {
     if (a.kind === "spinY") a.obj.rotation.y += a.speed * dt;
     else if (a.kind === "spinZ") a.obj.rotation.z += a.speed * dt;
@@ -6526,11 +6611,186 @@ function adaptPR(frameMs) {
   }
 }
 
+/* Crowd placement with AABB validation + ground snap, and extra rail/drum colliders. */
+
+function addBoxCollider(name, minX, minY, minZ, maxX, maxY, maxZ) {
+  World.colliders.push({
+    name,
+    min: new THREE.Vector3(Math.min(minX, maxX), Math.min(minY, maxY), Math.min(minZ, maxZ)),
+    max: new THREE.Vector3(Math.max(minX, maxX), Math.max(minY, maxY), Math.max(minZ, maxZ)),
+  });
+}
+
+function addDrumAndRailColliders() {
+  // RideWall was a solid AABB that filled the whole drum. Rebuild it as a ring
+  // with a south-side door gap (glTF +Z, Blender -Y) between the jambs.
+  const R = 4.48, thick = 0.32, segs = 22;
+  const gap = (18 * Math.PI) / 180;
+  for (let i = 0; i < segs; i++) {
+    const a0 = (i / segs) * Math.PI * 2;
+    const a1 = ((i + 1) / segs) * Math.PI * 2;
+    const mid = (a0 + a1) * 0.5;
+    // a = 0 is +Z (the door)
+    let ang = mid;
+    while (ang > Math.PI) ang -= Math.PI * 2;
+    while (ang < -Math.PI) ang += Math.PI * 2;
+    if (Math.abs(ang) < gap) continue;
+    const x = R * Math.sin(mid), z = R * Math.cos(mid);
+    const w = 2 * R * Math.sin((a1 - a0) * 0.5) + 0.1;
+    const hx = Math.abs(Math.cos(mid)) * w * 0.5 + Math.abs(Math.sin(mid)) * thick * 0.5;
+    const hz = Math.abs(Math.sin(mid)) * w * 0.5 + Math.abs(Math.cos(mid)) * thick * 0.5;
+    addBoxCollider("RideWallSeg_" + i, x - hx, 0.28, z - hz, x + hx, 5.9, z + hz);
+  }
+
+  // Queue rails (stanchion switchback south of the stairs). Stair gap is left open (x ~ -1.3..1.3, z ~ 6.2..8.9).
+  addBoxCollider("QueueRailL", -2.70, 0.05, 8.20, -2.30, 1.15, 16.60);
+  addBoxCollider("QueueRailR", -1.15, 0.05, 9.20, -0.75, 1.15, 16.60);
+  // Stair handrails
+  addBoxCollider("HandrailL", -0.85, 0.4, 6.20, -0.55, 1.70, 8.70);
+  addBoxCollider("HandrailR", 0.55, 0.4, 6.20, 0.85, 1.70, 8.70);
+  // Existing east fence is already in lot.json; keep a slightly taller volume so it actually blocks
+  addBoxCollider("FenceEast", 9.88, 0.15, -7.10, 10.12, 1.15, 7.10);
+}
+
+function crowdBlocked(x, z, r) {
+  r = r == null ? 0.42 : r;
+  for (let i = 0; i < World.colliders.length; i++) {
+    const b = World.colliders[i];
+    if (b.max.y < 0.2 || b.min.y > 1.6) continue;
+    if (Util.aabbHit(x, z, r, b)) return b.name || "solid";
+  }
+  return null;
+}
+
+function snapClear(x, z, r) {
+  // spiral search for a free ground point
+  if (!crowdBlocked(x, z, r)) return { x, z };
+  for (let k = 1; k <= 14; k++) {
+    const rad = 0.45 * k;
+    const steps = 8 + k * 2;
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      const nx = x + Math.cos(a) * rad;
+      const nz = z + Math.sin(a) * rad;
+      if (!crowdBlocked(nx, nz, r)) return { x: nx, z: nz };
+    }
+  }
+  return null;
+}
+
+// Three.js x,z,yaw (yaw 0 looks -Z, toward Night Press from the south).
+const CROWD_SLOTS = [
+  // Night Press queue, two lanes, facing the entrance (yaw 0 looks -Z)
+  { x: -1.72, z:  9.60, yaw: Math.PI },
+  { x: -0.15, z: 10.20, yaw: Math.PI },
+  { x: -1.72, z: 11.10, yaw: Math.PI },
+  { x: -0.15, z: 12.00, yaw: Math.PI },
+  { x: -1.72, z: 12.60, yaw: Math.PI },
+  { x: -0.15, z: 14.20, yaw: Math.PI },
+  { x: -1.72, z: 14.10, yaw: Math.PI },
+  { x: -1.72, z: 15.60, yaw: Math.PI },
+  // ticket booth — customer at the north window, attendant to the west
+  { x:  5.60, z:  5.15, yaw: 0 },
+  { x:  3.05, z:  9.20, yaw:  0.6 },
+  // food trailer 0 (lot / north face)
+  { x: -11.2, z: -16.35, yaw: Math.PI },
+  { x:  -9.4, z: -16.35, yaw: Math.PI + 0.15 },
+  { x: -10.3, z: -15.40, yaw: Math.PI - 0.2 },
+  // food trailer 1
+  { x:  8.50, z: -12.20, yaw: Math.PI },
+  { x: 10.80, z: -12.20, yaw: Math.PI + 0.2 },
+  // ferris — south of the A-frame, looking at the wheel
+  { x: -27.6, z: -26.80, yaw: 0.1 },
+  { x: -24.2, z: -27.00, yaw: 0 },
+  { x: -21.4, z: -26.60, yaw: -0.15 },
+  // carousel — just outside the platform
+  { x: -16.0, z:  -4.20, yaw: Math.PI },
+  { x:  -8.0, z: -12.00, yaw: -1.57 },
+  { x: -24.8, z:  -4.00, yaw:  1.2 },
+  // swing ride
+  { x:  2.90, z: -15.50, yaw: -1.57 },
+  { x:  3.10, z: -12.50, yaw: -1.4 },
+  { x: -5.20, z:  -8.20, yaw: Math.PI },
+  // mall sidewalk (west of the facade, clear of parked cars)
+  { x: 28.5, z:  2.00, yaw: 1.57 },
+  { x: 28.5, z:  8.50, yaw: 1.45 },
+  { x: 28.5, z: -14.0, yaw: 1.70 },
+  { x: 28.5, z: 16.00, yaw: 1.50 },
+  // mid-lot paths and small chat groups
+  { x:  -8.0, z: 22.00, yaw: 0.4 },
+  { x:   2.2, z: 18.50, yaw: -0.5 },
+  { x:   6.4, z: 12.00, yaw: 0.2 },
+  { x: -18.0, z:  4.00, yaw: 0.8 },
+  { x: -18.5, z: -4.50, yaw: -0.3 },
+  { x:   8.5, z: 14.00, yaw: 2.5 },
+  { x:  16.5, z: -3.00, yaw: 0.1 },
+  { x:  -6.5, z:  4.50, yaw: 1.1 },
+];
+
+function placeCrowd(root) {
+  const people = [];
+  root.traverse((o) => {
+    if (/^skeleton(\.?\d+)?$/i.test(o.name) && o.parent === root) people.push(o);
+  });
+  if (!people.length) {
+    root.children.forEach((o) => {
+      if (/^skeleton/i.test(o.name)) people.push(o);
+    });
+  }
+  people.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const used = [];
+  people.forEach((p, i) => {
+    const slot = CROWD_SLOTS[i] || { x: -8, z: 24 + i * 0.8, yaw: 0 };
+    const at = snapClear(slot.x, slot.z, 0.45);
+    if (!at) {
+      p.visible = false;
+      return;
+    }
+    // keep a little space between people
+    let x = at.x, z = at.z, ok = true;
+    for (const u of used) {
+      if (Math.hypot(u.x - x, u.z - z) < 0.85) { ok = false; break; }
+    }
+    if (!ok) {
+      const retry = snapClear(slot.x + 0.7, slot.z + 0.7, 0.45);
+      if (retry) { x = retry.x; z = retry.z; }
+    }
+    const y = groundHeight(x, z);
+    p.position.set(x, y, z);
+    p.rotation.set(0, slot.yaw, 0);
+    p.updateMatrix();
+    used.push({ x, z });
+    World.anim.push({
+      kind: "idle",
+      obj: p,
+      baseYaw: slot.yaw,
+      phase: i * 0.73,
+      sway: 0.12 + (i % 3) * 0.03,
+    });
+  });
+  if (typeof console !== "undefined") {
+    console.info("crowd placed", used.length, "of", people.length);
+  }
+}
+
+// idle ticks piggy-back on tickWorld
+function tickCrowd(dt) {
+  const t = (World.clock && World.clock.elapsedTime) || performance.now() / 1000;
+  // clock may not advance; use a local
+  tickCrowd._t = (tickCrowd._t || 0) + dt;
+  const tt = tickCrowd._t;
+  for (const a of World.anim) {
+    if (a.kind !== "idle") continue;
+    a.obj.rotation.y = a.baseYaw + Math.sin(tt * a.sway + a.phase) * 0.22;
+    a.obj.rotation.x = Math.sin(tt * (a.sway * 1.7) + a.phase) * 0.02;
+  }
+}
+
 const Player = {
   yaw: 0, pitch: 0,
   pos: new THREE.Vector3(),
   vel: new THREE.Vector3(),
-  radius: 0.38, eye: 1.62, speed: 4.2,
+  radius: 0.38, eye: 1.62, speed: 4.2, locked: false,
 };
 
 function resetPlayer() {
@@ -6554,8 +6814,12 @@ function collideXZ(x, z) {
   const { minX, maxX, minZ, maxZ } = World.bounds;
   x = Math.max(minX + r, Math.min(maxX - r, x));
   z = Math.max(minZ + r, Math.min(maxZ - r, z));
+  const feet = Player.pos.y - Player.eye;
+  const head = feet + 1.7;
   for (let i = 0; i < World.colliders.length; i++) {
-    const hit = Util.pushOut(x, z, r, World.colliders[i]);
+    const box = World.colliders[i];
+    if (box.max.y < feet + 0.40 || box.min.y > head) continue;
+    const hit = Util.pushOut(x, z, r, box);
     if (hit) { x = hit.x; z = hit.z; }
   }
   x = Math.max(minX + r, Math.min(maxX - r, x));
@@ -6564,6 +6828,7 @@ function collideXZ(x, z) {
 }
 
 function tickPlayer(dt) {
+  if (Player.locked) { syncCamera(); return; }
   const look = Input.consumeLook();
   const mv = Input.moveVec();
   Player.yaw -= look.dx + mv.lookX * dt;
@@ -6592,6 +6857,313 @@ function tickPlayer(dt) {
   syncCamera();
 }
 
+/* Night Press entrance + operator panel. Full rider cycle is milestone 3;
+   this gives a walkable door and a panel that actually does something. */
+const Ride = {
+  mode: "walk", // walk | panel
+  prompt: "",
+  root: null,
+  door: null,
+  wall: null,
+  pads: [],
+  leds: [],
+  needles: {},
+  power: false,
+  lights: false,
+  spinning: false,
+  spinT: 0,
+  spinPhase: "idle", // idle | up | hold | down
+  spinAngle: 0,
+  hornT: 0,
+  highlight: 0,
+  actions: ["power", "lights", "horn", "start", "back"],
+};
+
+Ride.bind = function (root) {
+  Ride.root = root;
+  Ride.pads = [];
+  Ride.leds = [];
+  root.traverse((o) => {
+    const n = o.name || "";
+    if (n === "RideDoor" || n === "DoorWindow") Ride.door = Ride.door || o;
+    if (n === "RideWall") Ride.wall = o;
+    if (/^(Pad_|Rib_|Hoop_|CenterCone|PadRidge_)/.test(n) && o.isMesh) Ride.pads.push(o);
+    if (/^LED_\d+$/.test(n) && o.isMesh) Ride.leds.push(o);
+    if (n === "RPMNeedle") Ride.needles.rpm = o;
+    if (n === "KeySwitch" || n === "KeyBlade") { if (!Ride.key) Ride.key = o; }
+    if (n === "ThrottleKnob") Ride.throttle = o;
+    if (n === "TogLever_0") Ride.togLights = o;
+    if (n === "AuxLev_0") Ride.auxLights = o;
+    if (n === "AuxLev_1") Ride.auxHorn = o;
+  });
+  Ride.leds.sort((a, b) => a.name.localeCompare(b.name));
+  Ride.setLeds(false);
+  Ride.bindUi();
+};
+
+Ride.bindUi = function () {
+  const prompt = document.getElementById("prompt");
+  if (prompt && !prompt._bound) {
+    prompt._bound = true;
+    prompt.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); Ride.doInteract(); });
+  }
+  const bar = document.getElementById("panelBar");
+  if (bar && !bar._bound) {
+    bar._bound = true;
+    bar.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      if (b) Ride.runAction(b.getAttribute("data-act"));
+    });
+  }
+  const canvas = document.getElementById("c");
+  if (canvas && !canvas._rideClick) {
+    canvas._rideClick = true;
+    canvas.addEventListener("click", (e) => {
+      if (Ride.mode === "panel") {
+        Ride.pickAt(e.clientX, e.clientY);
+        e.stopPropagation();
+      }
+    }, true);
+    canvas.addEventListener("touchend", (e) => {
+      if (Ride.mode !== "panel") return;
+      const t = e.changedTouches && e.changedTouches[0];
+      if (t) Ride.pickAt(t.clientX, t.clientY);
+    }, { passive: true });
+  }
+};
+
+Ride.inside = function (x, z) {
+  return Math.hypot(x, z) < 4.15;
+};
+
+Ride.nearDoor = function (x, z) {
+  const d = Math.hypot(x - 0, z - 4.85);
+  return d < 1.7 && Math.abs(x) < 1.6;
+};
+
+Ride.nearPanel = function (x, z) {
+  return Math.hypot(x - 8.2, z - (-1.05)) < 1.55;
+};
+
+Ride.updatePrompt = function () {
+  if (Ride.mode === "panel") {
+    Ride.prompt = "";
+    Ride.showPrompt(false);
+    return;
+  }
+  const x = Player.pos.x, z = Player.pos.z;
+  let text = "";
+  if (Ride.inside(x, z)) {
+    if (Ride.nearDoor(x, z) || z > 2.2) text = "Exit";
+  } else if (Ride.nearPanel(x, z)) {
+    text = "Operate";
+  } else if (Ride.nearDoor(x, z)) {
+    text = "Enter ride";
+  }
+  Ride.prompt = text;
+  Ride.showPrompt(text);
+};
+
+Ride.showPrompt = function (text) {
+  const el = document.getElementById("prompt");
+  if (!el) return;
+  if (!text) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = text.toUpperCase();
+};
+
+Ride.doInteract = function () {
+  AudioBus.resume();
+  if (Ride.mode === "panel") return;
+  const x = Player.pos.x, z = Player.pos.z;
+  if (Ride.inside(x, z) && (Ride.nearDoor(x, z) || z > 2.2)) Ride.exitDrum();
+  else if (Ride.nearPanel(x, z)) Ride.enterPanel();
+  else if (Ride.nearDoor(x, z)) Ride.enterDrum();
+};
+
+Ride.enterDrum = function () {
+  Player.pos.set(0, groundHeight(0, 3.15) + Player.eye, 3.15);
+  Player.yaw = 0;
+  Player.pitch = -0.04;
+  syncCamera();
+  AudioBus.click && AudioBus.click();
+};
+
+Ride.exitDrum = function () {
+  Player.pos.set(0, groundHeight(0, 5.85) + Player.eye, 5.85);
+  Player.yaw = Math.PI;
+  Player.pitch = -0.04;
+  syncCamera();
+  AudioBus.click && AudioBus.click();
+};
+
+Ride.enterPanel = function () {
+  Ride.mode = "panel";
+  Ride._saved = { x: Player.pos.x, y: Player.pos.y, z: Player.pos.z, yaw: Player.yaw, pitch: Player.pitch };
+  Player.locked = true;
+  Player.pos.set(8.20, 1.52, -0.95);
+  Player.yaw = 0;
+  Player.pitch = -0.12;
+  syncCamera();
+  document.body.classList.add("panel");
+  const bar = document.getElementById("panelBar");
+  if (bar) bar.hidden = false;
+  Ride.showPrompt(false);
+  if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
+  Ride.paintPanelButtons();
+  AudioBus.click && AudioBus.click();
+};
+
+Ride.exitPanel = function () {
+  Ride.mode = "walk";
+  Player.locked = false;
+  if (Ride._saved) {
+    Player.pos.set(Ride._saved.x, Ride._saved.y, Ride._saved.z);
+    Player.yaw = Ride._saved.yaw;
+    Player.pitch = Ride._saved.pitch;
+  }
+  syncCamera();
+  document.body.classList.remove("panel");
+  const bar = document.getElementById("panelBar");
+  if (bar) bar.hidden = true;
+};
+
+Ride.paintPanelButtons = function () {
+  const bar = document.getElementById("panelBar");
+  if (!bar) return;
+  bar.querySelectorAll("[data-act]").forEach((b, i) => {
+    b.classList.toggle("on", (b.getAttribute("data-act") === "power" && Ride.power) || (b.getAttribute("data-act") === "lights" && Ride.lights) || (b.getAttribute("data-act") === "start" && Ride.spinning));
+    b.classList.toggle("hi", i === Ride.highlight);
+  });
+};
+
+Ride.runAction = function (act) {
+  AudioBus.resume();
+  if (act === "back") { Ride.exitPanel(); return; }
+  if (act === "power") Ride.setPower(!Ride.power);
+  else if (act === "lights") Ride.setLights(!Ride.lights);
+  else if (act === "horn") Ride.horn();
+  else if (act === "start") Ride.startSpin();
+  Ride.paintPanelButtons();
+};
+
+Ride.setPower = function (on) {
+  Ride.power = !!on;
+  if (!on) {
+    Ride.setLights(false);
+    if (Ride.spinning) Ride.spinPhase = "down";
+  }
+  Ride.setLeds(on);
+  if (Ride.key) Ride.key.rotation.z = on ? 0.9 : 0;
+  AudioBus.blip && AudioBus.blip(on ? 520 : 240, 0.12, "square", 0.12);
+};
+
+Ride.setLights = function (on) {
+  if (on && !Ride.power) { AudioBus.blip && AudioBus.blip(180, 0.08, "square", 0.08); return; }
+  Ride.lights = !!on;
+  if (Ride.togLights) Ride.togLights.rotation.x = on ? -0.5 : 0.4;
+  if (Ride.auxLights) Ride.auxLights.rotation.x = on ? -0.4 : 0.3;
+  const boost = on ? 2.4 : 1.15;
+  if (Ride.root) {
+    Ride.root.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      mats.forEach((m) => {
+        const n = ((m && m.name) || o.name || "").toLowerCase();
+        if (/bulb_|neon|led_green|led_amber/.test(n) || /Neon|bulb_/i.test(o.name)) {
+          if (m.emissiveIntensity != null) m.emissiveIntensity = boost;
+          m.needsUpdate = true;
+        }
+      });
+    });
+  }
+  AudioBus.blip && AudioBus.blip(on ? 660 : 300, 0.1, "square", 0.1);
+};
+
+Ride.setLeds = function (on) {
+  Ride.leds.forEach((o, i) => {
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach((m) => {
+      if (!m) return;
+      if (!m._baseEm) m._baseEm = m.emissive ? m.emissive.clone() : new THREE.Color(0x11ff66);
+      if (m.emissive) m.emissive.copy(m._baseEm);
+      m.emissiveIntensity = on ? (i === 0 ? 3.2 : 1.6) : 0.08;
+    });
+  });
+};
+
+Ride.horn = function () {
+  if (!Ride.power) { AudioBus.blip && AudioBus.blip(180, 0.08, "square", 0.08); return; }
+  Ride.hornT = 0.55;
+  AudioBus.horn && AudioBus.horn();
+  if (Ride.auxHorn) Ride.auxHorn.rotation.x = -0.5;
+};
+
+Ride.startSpin = function () {
+  if (!Ride.power) { AudioBus.blip && AudioBus.blip(180, 0.08, "square", 0.08); return; }
+  if (Ride.spinning) return;
+  Ride.spinning = true;
+  Ride.spinT = 0;
+  Ride.spinPhase = "up";
+  Ride.spinAngle = 0;
+  if (Ride.throttle) Ride.throttle.position.y = (Ride.throttle.userData._y || (Ride.throttle.userData._y = Ride.throttle.position.y)) + 0.04;
+  AudioBus.motor && AudioBus.motor(0.2);
+};
+
+Ride.tick = function (dt) {
+  Ride.updatePrompt();
+  if (Ride.hornT > 0) {
+    Ride.hornT -= dt;
+    if (Ride.hornT <= 0 && Ride.auxHorn) Ride.auxHorn.rotation.x = 0.3;
+  }
+  if (Ride.spinning) {
+    Ride.spinT += dt;
+    let speed = 0;
+    if (Ride.spinPhase === "up") {
+      const k = Math.min(1, Ride.spinT / 3.2);
+      speed = 2.8 * k * k;
+      if (Ride.spinT > 3.2) { Ride.spinPhase = "hold"; Ride.spinT = 0; }
+    } else if (Ride.spinPhase === "hold") {
+      speed = 2.8;
+      if (Ride.spinT > 4.0) { Ride.spinPhase = "down"; Ride.spinT = 0; }
+    } else if (Ride.spinPhase === "down") {
+      const k = Math.max(0, 1 - Ride.spinT / 4.0);
+      speed = 2.8 * k * k;
+      if (Ride.spinT > 4.0) {
+        Ride.spinning = false;
+        Ride.spinPhase = "idle";
+        speed = 0;
+        AudioBus.motor && AudioBus.motor(0);
+        if (Ride.throttle && Ride.throttle.userData._y != null) Ride.throttle.position.y = Ride.throttle.userData._y;
+        Ride.paintPanelButtons();
+      }
+    }
+    AudioBus.motor && AudioBus.motor(Ride.spinning ? 0.15 + speed * 0.12 : 0, 140 + speed * 80);
+    Ride.spinAngle += speed * dt;
+    const q = Ride.spinAngle;
+    Ride.pads.forEach((o) => { o.rotation.y = q; });
+    if (Ride.needles.rpm) Ride.needles.rpm.rotation.z = -speed * 0.35;
+  }
+};
+
+Ride.pickAt = function (cx, cy) {
+  if (!World.camera || Ride.mode !== "panel") return;
+  if (!Ride._ray) Ride._ray = new THREE.Raycaster();
+  const ndc = new THREE.Vector2((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
+  Ride._ray.setFromCamera(ndc, World.camera);
+  const hits = Ride._ray.intersectObjects(Ride.root ? Ride.root.children : [], true);
+  for (let i = 0; i < hits.length; i++) {
+    const n = (hits[i].object.name || "").toLowerCase();
+    if (/key/.test(n)) { Ride.runAction("power"); return; }
+    if (/estop/.test(n)) { Ride.setPower(false); Ride.paintPanelButtons(); return; }
+    if (/auxlev_1|toglever_1|horn/.test(n)) { Ride.runAction("horn"); return; }
+    if (/toglever_0|auxlev_0|auxlev_2/.test(n)) { Ride.runAction("lights"); return; }
+    if (/throttle/.test(n)) { Ride.runAction("start"); return; }
+  }
+};
+
+window.Ride = Ride;
+
 const Stats = { frames: 0, acc: 0, ms: 16, last: performance.now() };
 
 function frame() {
@@ -6599,6 +7171,19 @@ function frame() {
   let dt = (now - Stats.last) / 1000;
   Stats.last = now;
   if (dt > 0.08) dt = 0.08;
+  const ev = Input.consumeInteract ? Input.consumeInteract() : { pressed: false, back: false, dpad: 0 };
+  if (typeof Ride !== "undefined") {
+    if (Ride.mode === "panel") {
+      if (ev.back) Ride.exitPanel();
+      else if (ev.pressed) Ride.runAction(Ride.actions[Ride.highlight] || "back");
+      else if (ev.dpad) {
+        Ride.highlight = (Ride.highlight + ev.dpad + Ride.actions.length) % Ride.actions.length;
+        Ride.paintPanelButtons();
+      }
+    } else if (ev.pressed) {
+      Ride.doInteract();
+    }
+  }
   tickPlayer(dt);
   tickWorld(dt);
   if (World.composer) World.composer.render();
@@ -6642,6 +7227,8 @@ async function boot() {
   }).catch(() => {});
   setupXR();
   window.World = World;
+  window.Player = Player;
+  window.Util = Util;
   window.__READY = true;
   window.__teleport = (x, y, z, yaw, pitch) => {
     Player.pos.set(x, y, z);
