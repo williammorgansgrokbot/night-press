@@ -34,13 +34,25 @@ function prepareMaterials(root) {
       if (!m) return;
       if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
       if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+      const n = (m.name || o.name || "").toLowerCase();
       const em = m.emissive ? m.emissive.getHex() : 0;
-      if (em > 0 || (m.emissiveIntensity && m.emissiveIntensity > 0.01)) {
-        m.emissiveIntensity = Math.max(m.emissiveIntensity || 1, 1.4);
+      // parked cars should not blaze headlights; keep a faint tail lamp at most
+      if (/light_front|headlamp|headlight|moving_\d+_hl/.test(n)) {
+        if (m.emissive) m.emissive.setRGB(0, 0, 0);
+        m.emissiveIntensity = 0;
+      } else if (/light_rear|taillamp|tail_/.test(n)) {
+        m.emissiveIntensity = Math.min(m.emissiveIntensity || 1, 0.25);
+      } else if (/window_office|window_hotel/.test(n)) {
+        // mall glass was blasting white; keep a dim interior glow
+        if (m.emissive) m.emissive.multiplyScalar(0.28);
+        m.emissiveIntensity = Math.min(m.emissiveIntensity || 1, 0.35);
+        if ("envMapIntensity" in m) m.envMapIntensity = 0.45;
+        m.roughness = Math.max(m.roughness ?? 0.2, 0.35);
+      } else if (em > 0 || (m.emissiveIntensity && m.emissiveIntensity > 0.01)) {
+        m.emissiveIntensity = Math.max(m.emissiveIntensity || 1, 1.15);
         m.toneMapped = true;
       }
       // wet-look boost for asphalt-like materials
-      const n = (m.name || o.name || "").toLowerCase();
       if (n.includes("asphalt") || n.includes("ground") || n.includes("puddle")) {
         m.roughness = Math.min(m.roughness ?? 0.5, 0.28);
         m.metalness = Math.max(m.metalness ?? 0, 0.12);
@@ -142,13 +154,13 @@ async function initWorld() {
   };
   World.colliders = (lot.colliders || []).filter((c) => {
     const n = (c.name || "").toLowerCase().replace(/\s|\./g, "");
-    if (/^(riser_|stanchbase|doorthresh|doorstoop|rampa$|rampb$|rampmid|edgeroad|genskid|trailerskirt|trailerfloor|panelkick|stripe|hoop_|padridge)/.test(n)) return false;
+    if (/^(riser_|stanchbase|doorthresh|doorstoop|chassiscross|chassisbeam|rampa$|rampb$|rampmid|edgeroad|genskid|trailerskirt|trailerfloor|panelkick|panelshelf|stripe|hoop_|padridge|ridewall$|ridedoor$)/.test(n)) return false;
     if ((c.name || "").toLowerCase().includes("crowd_barrier")) {
-      if (c.min[0] < 1.45 && c.max[0] > -1.45) return false;
+      if (c.min[0] < 1.45 && c.max[0] > -1.45) return false; // gap at the Night Press stairs / door
     }
-    if (c.max[2] < 0.28 && (c.max[2] - c.min[2]) < 0.35) return false;
+    if (c.max[2] < 0.36 && (c.max[2] - c.min[2]) < 0.40) return false;
     return true;
-  }).map(Util.boxToThree);
+  }).map((c) => Object.assign(Util.boxToThree(c), { name: c.name }));
   World.floors = (lot.floors || []).map((f) => {
     const a = Util.fromBlender(f.min[0], f.min[1], f.z);
     const b = Util.fromBlender(f.max[0], f.max[1], f.z);
@@ -159,6 +171,8 @@ async function initWorld() {
       minZ: Math.min(a.z, b.z), maxZ: Math.max(a.z, b.z),
     };
   });
+
+  addDrumAndRailColliders();
 
   const assets = [
     ["ground.glb", 0.2, "Laying asphalt…"],
@@ -177,8 +191,9 @@ async function initWorld() {
       const root = await loadGLB("assets/" + file);
       prepareMaterials(root);
       scene.add(root);
-      // ride animations — only the moving parts, never the planted supports
       if (file === "carnival.glb") hookCarnivalAnims(root);
+      if (file === "night_press.glb") { World.rideRoot = root; if (typeof Ride !== "undefined") Ride.bind(root); }
+      if (file === "people.glb") placeCrowd(root);
     } catch (err) {
       console.warn("missing or failed", file, err);
     }
@@ -274,6 +289,8 @@ function hookCarnivalAnims(root) {
 }
 
 function tickWorld(dt) {
+  if (typeof tickCrowd === "function") tickCrowd(dt);
+  if (typeof Ride !== "undefined" && Ride.tick) Ride.tick(dt);
   for (const a of World.anim) {
     if (a.kind === "spinY") a.obj.rotation.y += a.speed * dt;
     else if (a.kind === "spinZ") a.obj.rotation.z += a.speed * dt;

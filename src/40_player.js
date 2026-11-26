@@ -2,7 +2,7 @@ const Player = {
   yaw: 0, pitch: 0,
   pos: new THREE.Vector3(),
   vel: new THREE.Vector3(),
-  radius: 0.38, eye: 1.62, speed: 4.2,
+  radius: 0.38, eye: 1.62, speed: 4.2, locked: false,
 };
 
 function resetPlayer() {
@@ -26,8 +26,12 @@ function collideXZ(x, z) {
   const { minX, maxX, minZ, maxZ } = World.bounds;
   x = Math.max(minX + r, Math.min(maxX - r, x));
   z = Math.max(minZ + r, Math.min(maxZ - r, z));
+  const feet = Player.pos.y - Player.eye;
+  const head = feet + 1.7;
   for (let i = 0; i < World.colliders.length; i++) {
-    const hit = Util.pushOut(x, z, r, World.colliders[i]);
+    const box = World.colliders[i];
+    if (box.max.y < feet + 0.40 || box.min.y > head) continue;
+    const hit = Util.pushOut(x, z, r, box);
     if (hit) { x = hit.x; z = hit.z; }
   }
   x = Math.max(minX + r, Math.min(maxX - r, x));
@@ -36,6 +40,7 @@ function collideXZ(x, z) {
 }
 
 function tickPlayer(dt) {
+  if (Player.locked) { syncCamera(); return; }
   const look = Input.consumeLook();
   const mv = Input.moveVec();
   Player.yaw -= look.dx + mv.lookX * dt;

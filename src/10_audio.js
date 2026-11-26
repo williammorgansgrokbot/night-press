@@ -57,5 +57,46 @@ const AudioBus = (() => {
     if (btn) btn.textContent = muted ? "SOUND OFF" : "SOUND ON";
   }
 
-  return { resume, loadLoop, toggle, setMuted, get muted() { return muted; }, get started() { return started; } };
+  function blip(freq, dur, type, gain) {
+    ensure();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type || "square";
+    o.frequency.value = freq;
+    const t = ctx.currentTime;
+    const amp = gain == null ? 0.14 : gain;
+    g.gain.setValueAtTime(amp, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(AudioBus._hp);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  function click() { blip(880, 0.05, "square", 0.08); }
+  function horn() {
+    blip(420, 0.5, "sawtooth", 0.2);
+    blip(280, 0.5, "square", 0.1);
+  }
+  let mot = null;
+  function motor(gain, freq) {
+    ensure();
+    if (!ctx) return;
+    if (gain <= 0.01) {
+      if (mot) { mot.g.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.08); }
+      return;
+    }
+    if (!mot) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sawtooth";
+      o.frequency.value = freq || 160;
+      g.gain.value = 0.0001;
+      o.connect(g); g.connect(AudioBus._hp);
+      o.start();
+      mot = { o, g };
+    }
+    mot.o.frequency.setTargetAtTime(freq || 160, ctx.currentTime, 0.1);
+    mot.g.gain.setTargetAtTime(gain, ctx.currentTime, 0.1);
+  }
+
+  return { resume, loadLoop, toggle, setMuted, blip, click, horn, motor, get muted() { return muted; }, get started() { return started; } };
 })();

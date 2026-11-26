@@ -34,7 +34,7 @@ def main():
     postfx = (VENDOR / "postfx.js").read_text()
     gltf = (VENDOR / "gltf.js").read_text()
     meshopt = (VENDOR / "meshopt_decoder.js").read_text()
-    modules = ["00_util", "10_audio", "20_input", "30_world", "40_player", "50_main"]
+    modules = ["00_util", "10_audio", "20_input", "30_world", "35_crowd", "40_player", "45_ride", "50_main"]
     game = "\n".join((ROOT / "src" / (n + ".js")).read_text() for n in modules)
     body = ('(function(){"use strict";\n' + three + "\n" + meshopt + "\n" + postfx + "\n" + gltf + "\n" + game + "\n})();")
     body = body.replace("</script", "<\\/script")

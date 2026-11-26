@@ -5,6 +5,19 @@ function frame() {
   let dt = (now - Stats.last) / 1000;
   Stats.last = now;
   if (dt > 0.08) dt = 0.08;
+  const ev = Input.consumeInteract ? Input.consumeInteract() : { pressed: false, back: false, dpad: 0 };
+  if (typeof Ride !== "undefined") {
+    if (Ride.mode === "panel") {
+      if (ev.back) Ride.exitPanel();
+      else if (ev.pressed) Ride.runAction(Ride.actions[Ride.highlight] || "back");
+      else if (ev.dpad) {
+        Ride.highlight = (Ride.highlight + ev.dpad + Ride.actions.length) % Ride.actions.length;
+        Ride.paintPanelButtons();
+      }
+    } else if (ev.pressed) {
+      Ride.doInteract();
+    }
+  }
   tickPlayer(dt);
   tickWorld(dt);
   if (World.composer) World.composer.render();
@@ -48,6 +61,8 @@ async function boot() {
   }).catch(() => {});
   setupXR();
   window.World = World;
+  window.Player = Player;
+  window.Util = Util;
   window.__READY = true;
   window.__teleport = (x, y, z, yaw, pitch) => {
     Player.pos.set(x, y, z);

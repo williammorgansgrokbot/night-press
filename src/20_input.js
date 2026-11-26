@@ -6,6 +6,7 @@ const Input = (() => {
   const padL = { x: 0, y: 0 }, padR = { x: 0, y: 0 };
   let lookSens = 0.0022, padLookSens = 1.6;
   let pointerLocked = false;
+  let interactPrev = false, backPrev = false;
 
   function bind() {
     if (Util.isTouch()) document.body.classList.add("touch");
@@ -19,8 +20,10 @@ const Input = (() => {
     window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
     const canvas = document.getElementById("c");
-    canvas.addEventListener("click", () => {
+    canvas.addEventListener("click", (e) => {
       AudioBus.resume();
+      if (typeof Ride !== "undefined" && Ride.mode === "panel") return;
+      if (typeof Ride !== "undefined" && Ride.prompt) { Ride.doInteract(); return; }
       if (!Util.isTouch() && canvas.requestPointerLock) canvas.requestPointerLock();
     });
     document.addEventListener("pointerlockchange", () => {
@@ -129,5 +132,29 @@ const Input = (() => {
     return { x, y, mag: Math.min(1, l), lookX: padR.x * padLookSens, lookY: padR.y * padLookSens };
   }
 
-  return { bind, moveVec, consumeLook };
+  function consumeInteract() {
+    pollPad();
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let pad = null;
+    for (let i = 0; i < pads.length; i++) if (pads[i]) { pad = pads[i]; break; }
+    const a = !!(pad && pad.buttons[0] && pad.buttons[0].pressed);
+    const b = !!(pad && pad.buttons[1] && pad.buttons[1].pressed);
+    const down = !!(keys.KeyE) || a;
+    const backDown = !!(keys.Escape || keys.KeyQ) || b;
+    const pressed = down && !interactPrev;
+    const back = backDown && !backPrev;
+    interactPrev = down;
+    backPrev = backDown;
+    let dpad = 0;
+    if (pad) {
+      if (pad.buttons[14] && pad.buttons[14].pressed) dpad = -1;
+      if (pad.buttons[15] && pad.buttons[15].pressed) dpad = 1;
+    }
+    if (keys.ArrowLeft && !keys._hlL) dpad = -1;
+    if (keys.ArrowRight && !keys._hlR) dpad = 1;
+    keys._hlL = !!keys.ArrowLeft; keys._hlR = !!keys.ArrowRight;
+    return { pressed, back, dpad };
+  }
+
+  return { bind, moveVec, consumeLook, consumeInteract, get pointerLocked() { return pointerLocked; } };
 })();
